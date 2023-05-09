@@ -15,6 +15,7 @@ import subprocess
 import datetime as dt
 import numba as nb
 import concurrent.futures
+import dask.array as da
 
 SZA_PATH = '/data01/GEO/INPUT/ANGLE/Solar_Zenith_Angle_u2/'
 SAA_PATH = '/data01/GEO/INPUT/ANGLE/Solar_Azimuth_Angle_u2/'
@@ -64,33 +65,80 @@ def read_AHI_VA(res):
     else:
         return None
     
+    
+    
 class H8_data:
-    def __init__(self , account , pw , band , band_number , date , sava_path):
+    """
+    Class for handling Himawari8/AHI data
+
+    Attributes:
+        account (str): SSH account for accessing the remote server
+        pw (str): SSH password for accessing the remote server
+        band (str): Band name of the AHI data ("vis", "nir", or "swir")
+        band_number (str): Band number of the AHI data
+        date (str): Date of the AHI data in the format "YYYYMMDDHHMM"
+        sava_path (str): Path for saving the downloaded data
+    """
+
+    def __init__(self, account, pw, band, band_number, date, save_path):
         self.account = account
         self.pw = pw
         self.band = band
         self.band_number = band_number
         self.date = date
-        self.sava_path = sava_path
+        self.save_path = save_path
 
     def get_path(self):
-        return '/data01/GEO/ORGDATA/H8AHI/hmwr829gr.cr.chiba-u.ac.jp/gridded/FD/V20151105/' + self.date[0:6] + '/' + self.band.upper() + '/'
+        """
+        Get the file path of the AHI data on the remote server
+
+        Returns:
+            str: File path of the AHI data on the remote server
+        """
+        return "/data01/GEO/ORGDATA/H8AHI/hmwr829gr.cr.chiba-u.ac.jp/gridded/FD/V20151105/" + self.date[:6] + "/" + self.band.upper() + "/"
 
     def get_filename(self):
+        """
+        Get the filename of the AHI data
+
+        Returns:
+            str: Filename of the AHI data
+        """
         return self.date + "." + self.band + "." + self.band_number + ".fld.geoss.bz2"
 
     def DN2TBB(self, data):
-        LUT=np.loadtxt(DN_PATH + 'count2tbb_v102/' + self.band + "." + self.band_number)
-        return LUT[data,1]
+        """
+        Convert digital numbers to brightness temperatures
+
+        Args:
+            data (ndarray): A numpy array containing the digital numbers
+
+        Returns:
+            ndarray: A numpy array containing the brightness temperatures
+        """
+        LUT = np.loadtxt(DN_PATH + "count2tbb/" + self.band + "." + self.band_number + "." + self.date[:4])
+        return LUT[data, 1]
 
     def file_path(self):
+        """
+        Get the full file path of the downloaded AHI data
+
+        Returns:
+            str: Full file path of the downloaded AHI data
+        """
         return self.get_path() + self.get_filename()
 
     def download_H8data(self):
+        """
+        Download the AHI data from the remote server and save it to the local directory
+
+        Returns:
+            str: File path of the downloaded AHI data, or "No data" if the data doesn't exist
+        """
         client = paramiko.SSHClient()
         client.load_system_host_keys()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname='10.4.104.140', port=22, username=self.account, password=self.pw)
+        client.connect(hostname="10.4.104.140", port=22, username=self.account, password=self.pw)
         scp = SCPClient(client.get_transport())
         sftp = client.open_sftp()
 
@@ -98,17 +146,24 @@ class H8_data:
             sftp.stat(self.file_path())
         except FileNotFoundError:
             client.close()
-            print("File Not Found")
-            return 'No data'
+            # print("File Not Found")
+            return "No data"
         else:
-            scp.get(self.file_path(), self.sava_path+'/')
-            p = subprocess.Popen('lbzip2 -d {}{}'.format(self.sava_path+'/',self.file_path()[-33:]),shell=True)
+            scp.get(self.file_path(), self.save_path + "/")
+            p = subprocess.Popen("lbzip2 -d {}{}".format(self.save_path + "/", self.file_path()[-33:]), shell=True)
             p.communicate()
             client.close()
-            print ('Himawari8/AHI data Processed Finish')
-            return self.sava_path + self.get_filename()[:-4]
+            # print("Himawari8/AHI data processed successfully")
+            return self.save_path + self.get_filename()[:-4]
 
     def read_H8data(self):
+        """
+        Read the downloaded Himawari8/AHI data and convert the digital numbers (DN) to brightness temperatures (TBB)
+
+        Returns:
+            numpy.ndarray: Array of brightness temperatures
+            str: "No data" if the data is not available
+        """
         H8_file_path = self.download_H8data()
         if self.band == "vis":
             sr = 12000
@@ -122,98 +177,127 @@ class H8_data:
             data = data/100
             if self.band == "ext": 
                 data = data.reshape(12000,2,12000,2).mean(-1).mean(1)
-                
-            print("data reading finish")
+
+            # print("data reading finish")
             return data
         else:
             return 'No data'
         
 
-class LUT_interpolation:
+class LUT_interpolator:
+    """
+    This class is used to read LUT files and interpolate LUT data.
+    """
+
     def __init__(self, band):
+        """
+        Constructor for LUTInterpolator class.
+
+        Args:
+            lut_path (str): The path to the LUT files.
+            band (int): The band number.
+
+        """
         self.band = band
-        self.function_dict = {1: self._interpolation_band1,
-                              2: self._interpolation_band2,
-                              3: self._interpolation_band3,
-                              4: self._interpolation_band4,
-                              5: self._interpolation_band5,
-                              6: self._interpolation_band6}
-    
-    def _interpolation_band1(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band1.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band1.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band1.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        fn1 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
+        self.fn1, self.fn2, self.fn3 = self._interpolate()
+
+    def _interpolate(self):
+        """
+        Reads the LUT files and performs interpolation on LUT data.
+        """
+        filename1 = f"01_band{self.band}.csv"
+        filename2 = f"02_band{self.band}.csv"
+        filename3 = f"03_band{self.band}.csv"
+
+        # Read the LUT data.
+        X1 = np.loadtxt(LUT_PATH + filename1, delimiter=",")
+        X2 = np.loadtxt(LUT_PATH + filename2, delimiter=",")
+        X3 = np.loadtxt(LUT_PATH + filename3, delimiter=",")
+
+        # Reshape the LUT data into the appropriate shape.
+        if self.band in [1, 2]:
+            X1 = X1.reshape(2, 5, 12, 5, 17, 17, 19)
+            X2 = X2.reshape(2, 5, 12, 5, 17, 17, 19)
+            X3 = X3.reshape(2, 5, 12, 5, 17, 17, 19)
+            params = (aero_type, ozone, AOT, al, sza, vza, raa)
+        elif self.band in [3]:
+            X1 = X1.reshape(2, 8, 5, 12, 5, 17, 17, 19)
+            X2 = X2.reshape(2, 8, 5, 12, 5, 17, 17, 19)
+            X3 = X3.reshape(2, 8, 5, 12, 5, 17, 17, 19)
+            params = (aero_type, water, ozone, AOT, al, sza, vza, raa)
+        else:
+            X1 = X1.reshape(2, 8, 12, 5, 17, 17, 19)
+            X2 = X2.reshape(2, 8, 12, 5, 17, 17, 19)
+            X3 = X3.reshape(2, 8, 12, 5, 17, 17, 19)
+            params = (aero_type, water, AOT, al, sza, vza, raa)
+
+        # Perform interpolation on the LUT data.
+        fn1 = RegularGridInterpolator(params, X1, bounds_error=False, fill_value=np.nan)
+        fn2 = RegularGridInterpolator(params, X2, bounds_error=False, fill_value=np.nan)
+        fn3 = RegularGridInterpolator(params, X3, bounds_error=False, fill_value=np.nan)
+
         return fn1, fn2, fn3
     
-    def _interpolation_band2(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band2.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band2.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band2.csv",delimiter=",").reshape(2,5,12,5,17,17,19)
-        fn1 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,ozone,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
-        return fn1, fn2, fn3
-    
-    def _interpolation_band3(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band3.csv",delimiter=",").reshape(2,8,5,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band3.csv",delimiter=",").reshape(2,8,5,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band3.csv",delimiter=",").reshape(2,8,5,12,5,17,17,19)        
-        fn1 = RegularGridInterpolator((aero_type,water,ozone,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,water,ozone,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,water,ozone,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
-        return fn1, fn2, fn3
-    
-    def _interpolation_band4(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band4.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band4.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band4.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        fn1 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
-        return fn1, fn2, fn3
-    
-    def _interpolation_band5(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band5.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band5.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band5.csv",delimiter=",").reshape(2,8,12,5,17,17,19)        
-        fn1 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
-        return fn1, fn2, fn3
-    
-    def _interpolation_band6(self):
-        X1 = np.loadtxt(LUT_PATH + "01_band6.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X2 = np.loadtxt(LUT_PATH + "02_band6.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        X3 = np.loadtxt(LUT_PATH + "03_band6.csv",delimiter=",").reshape(2,8,12,5,17,17,19)
-        fn1 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X1,bounds_error=False,fill_value=np.nan)
-        fn2 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X2,bounds_error=False,fill_value=np.nan)
-        fn3 = RegularGridInterpolator((aero_type,water,AOT,al,sza,vza,raa),X3,bounds_error=False,fill_value=np.nan)
-        return fn1, fn2, fn3
 
 class AHI_angle:
-    def __init__(self,date,col_AHI):
-        # self.date = date[4:11]
-        self.SZA_filename = SZA_PATH + 'AHI_SZA_2018{}5.dat'.format(date[4:11])
-        self.SAA_filename = SAA_PATH + 'AHI_SAA_2018{}5.dat'.format(date[4:11])
+    """
+    This class is used to read auxiliary data for the AHI satellite, such as the solar zenith angle (SZA) and solar azimuth angle (SAA).
+    """
+    def __init__(self, date, col_AHI):
+        """
+        Constructor for the AHIAngle class.
+
+        Args:
+            date (str): The date in the format of 'yyyymmdd'.
+            col_AHI (int): The number of columns in the AHI image.
+        """
+        self.sza_filename = f"{SZA_PATH}AHI_SZA_2018{date[4:11]}5.dat"
+        self.saa_filename = f"{SAA_PATH}AHI_SAA_2018{date[4:11]}5.dat"
         self.col_AHI = col_AHI
-    def read_SolarAngle(self, filename):
-        SA = np.memmap(filename, dtype='u2', mode='r', shape=(3000, 3000)) / 100
-        SA=cv2.resize(np.array(SA,dtype='float64'),(self.col_AHI,self.col_AHI),interpolation=cv2.INTER_NEAREST)
-        return SA
-    
+
+    def _read_solar_angle(self, filename):
+        """
+        Reads the solar angle data from a file and resizes it to match the AHI image.
+
+        Args:
+            filename (str): The file path to the solar angle data.
+
+        Returns:
+            The solar angle data, with the same dimensions as the AHI image.
+        """
+        sa = np.memmap(filename, dtype='u2', mode='r', shape=(3000, 3000)) / 100
+        sa = cv2.resize(np.array(sa, dtype='float64'), (self.col_AHI, self.col_AHI), interpolation=cv2.INTER_NEAREST)
+        return sa
+
     def read_solar_angle(self):
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            file_list = [self.SZA_filename, self.SAA_filename]
-            results = [executor.submit(self.read_SolarAngle, file) for file in file_list]
-        Result = [result.result() for result in results]
-        return Result
+        """
+        Reads the SZA and SAA data concurrently using multiple threads.
+
+        Returns:
+            A list containing the SZA and SAA data, each with the same dimensions as the AHI image.
+        """
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            file_list = [self.sza_filename, self.saa_filename]
+            results = [executor.submit(self._read_solar_angle, file) for file in file_list]
+        result_list = [result.result() for result in results]
+        return result_list
     
-    
+
 class CAMS_data:
-    def __init__(self,Y,M,D,H,MI,lat,lon,col_AHI):
+    def __init__(self, Y, M, D, H, MI, lat, lon, row):
+        """
+        Constructor for the CAMS_data class.
+
+        Args:
+            Y (str): The year in the format of 'yyyy'.
+            M (str): The month in the format of 'mm'.
+            D (str): The day in the format of 'dd'.
+            H (str): The hour in the format of 'hh'.
+            MI (str): The minute in the format of 'mm'.
+            lat (float): The latitude of the location.
+            lon (float): The longitude of the location.
+            row (int): The number of rows in the output data.
+        """
         self.YYYY = Y
         self.MM = M
         self.DD = D
@@ -221,108 +305,76 @@ class CAMS_data:
         self.MIN = MI
         self.lon = lon
         self.lat = lat
-        self.col_AHI = col_AHI
-        
+        self.row = row
+
     def read_CAMS(self):
-        d1 = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD))
-        d2 = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD)) + dt.timedelta(days=1)
+        """
+        Reads CAMS atmospheric data.
 
-        ds1 = xr.open_dataset(CAMS_PATH + d1.strftime('%Y') + d1.strftime('%m') + d1.strftime('%d') + '.nc')
-        ds2 = xr.open_dataset(CAMS_PATH + d2.strftime('%Y') + d2.strftime('%m') + d2.strftime('%d') + '.nc')
-        ds = xr.merge([ds1, ds2]) 
-        ds = ds.interp(longitude=self.lon,latitude=self.lat,method="nearest")
-        return ds
-        
-         
-    # def CAMS_Temporal(self,ds):
-    #     # dtime = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD),int(self.HH),int(self.MIN)+5)
-    #     e1= T.time()
-    #     # ds = ds.interp(time = dtime,method = 'linear')
-    #     e2 = T.time()
-    #     print(e2-e1)
-    #     OZ = ds['gtco3'].values        
-    #     WV = ds['tcwv'].values        
-    #     AOT550 = ds['aod550'].values
-    #     WV = WV/10
-    #     OZ = OZ*46.6975764
-    #     OZ[OZ>=max(ozone)] = max(ozone)-(1/10000)
-    #     OZ[OZ<=min(ozone)] = min(ozone)+(1/10000)
-    #     WV[WV>=max(water)] = max(water)-(1/10000)
-    #     WV[WV<=min(water)] = min(water)+(1/10000)
-    #     AOT550[AOT550>=max(AOT)] = max(AOT)-(1/10000)
-    #     AOT550[AOT550<=min(AOT)] = min(AOT)+(1/10000)
-    #     return np.array(OZ).reshape(self.col_AHI,self.col_AHI),np.array(WV).reshape(self.col_AHI,self.col_AHI),np.array(AOT550).reshape(self.col_AHI,self.col_AHI)
-    
-    def CAMS_Temporal(self,ds):
-        # dtime = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD),int(self.HH),int(self.MIN)+5)
-        # ds = ds.interp(time = dtime,method = 'linear')
-        OZ = ds['gtco3'].values        
-        WV = ds['tcwv'].values        
+        Returns:
+            Ozone, water vapor, and aerosol optical thickness data.
+        """
+        # Determine which files to read based on the hour of the observation
+        if int(self.HH) >= 21:
+            d1 = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD))
+            d2 = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD)) + dt.timedelta(days=1)
+
+            ds1 = xr.open_dataset(CAMS_PATH + d1.strftime('%Y') + d1.strftime('%m') + d1.strftime('%d') + '.nc')
+            ds2 = xr.open_dataset(CAMS_PATH + d2.strftime('%Y') + d2.strftime('%m') + d2.strftime('%d') + '.nc')
+            ds = xr.merge([ds1, ds2])
+
+        else:
+            ds = xr.open_dataset(CAMS_PATH + self.YYYY + self.MM + self.DD + '.nc')
+
+        # Interpolate data to the specified location and time
+        dtime = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD), int(self.HH), int(self.MIN) + 5)
+        ds = ds.interp(time=dtime, method='linear')
+        ds = ds.interp(longitude=self.lon, latitude=self.lat, method="nearest")
+
+        # Extract data from the dataset
+        OZ = ds['gtco3'].values
+        WV = ds['tcwv'].values
         AOT550 = ds['aod550'].values
-        # e1= T.time()
-        idx = int(self.HH) // 3
-        past_hour = int(self.HH) % 3
-        mint = past_hour * 60 + int(self.MIN)+5
-        
-        OZ = (((OZ[idx+1] - OZ[idx]) * mint / 180) + OZ[idx]) *46.6975764
-        WV = (((WV[idx+1] - WV[idx]) * mint / 180) + WV[idx]) /10
-        AOT550 = (((AOT550[idx+1] - AOT550[idx]) * mint / 180) + AOT550[idx])
-        # e2 = T.time()
-        # print(e2-e1)
- 
-        OZ = np.clip(OZ,0.2,0.4)
-        WV = np.clip(WV,0,7)
-        AOT550 = np.clip(AOT550,0,2)
+
+        # Convert the units of ozone and water vapor
+        WV = WV / 10
+        OZ = OZ * 46.6975764
+
+        # Adjust the range of the data to match the reference range
+        OZ = np.clip(OZ, min(ozone), max(ozone))
+        WV = np.clip(WV, min(water), max(water))
+        AOT550 = np.clip(AOT550, min(AOT), max(AOT))
+
         return OZ,WV,AOT550
-
-    def read_CAMS_AERO(self):
-
-        d1 = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD))
-        d2 = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD)) + dt.timedelta(days=1)
-        ds1 = xr.open_dataset(CAMS_AERO_PATH + d1.strftime('%Y') + d1.strftime('%m') + d1.strftime('%d') + '.nc')
-        ds2 = xr.open_dataset(CAMS_AERO_PATH + d2.strftime('%Y') + d2.strftime('%m') + d2.strftime('%d') + '.nc')
-        ds = xr.merge([ds1, ds2]) 
-        # s = T.time()
-        ds = ds.interp(longitude=self.lon,latitude=self.lat,method="nearest")
-        # e1= T.time()
-        # print(e1-s)
-        return ds
     
-    def CAMS_AERO_Temporal(self,ds):
-        dtime = dt.datetime(int(self.YYYY),int(self.MM),int(self.DD),int(self.HH),int(self.MIN)+5)
-        # e1= T.time()
-        bc = ds['bcaod550'].values
-        du = ds['duaod550'].values
-        om = ds['omaod550'].values
-        ss = ds['ssaod550'].values
-        su = ds['suaod550'].values
-        
-        idx = int(self.HH) // 3
-        past_hour = int(self.HH) % 3
-        mint = past_hour * 60 + int(self.MIN)+5
-        
-        bc = (((bc[idx+1] - bc[idx]) * mint / 180) + bc[idx]) 
-        du = (((du[idx+1] - du[idx]) * mint / 180) + du[idx])
-        om = (((om[idx+1] - om[idx]) * mint / 180) + om[idx])
-        ss = (((om[idx+1] - ss[idx]) * mint / 180) + ss[idx])
-        su = (((om[idx+1] - su[idx]) * mint / 180) + su[idx])
-        
-        # e2 = T.time()
-        # print(e2-e1)
+    def read_CAMS_AERO(self):
+        """
+        Reads CAMS aerosol data.
 
-        DL_6S = np.array(du)
-        SL_6S = np.array(su) + np.array(bc)
-        OC_6S = np.array(ss)
-        WS_6S = np.array(om)
+        Returns:
+            A binary array indicating the dominant type of aerosol at the location and time.
+        """
+        # Determine which files to read based on the hour of the observation
+        if int(self.HH) >= 21:
+            d1 = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD))
+            d2 = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD)) + dt.timedelta(days=1)
 
-        Total = DL_6S + SL_6S + OC_6S + WS_6S
-        precent_DL_6S = DL_6S / Total
-        precent_SL_6S = SL_6S / Total
-        precent_OC_6S = OC_6S / Total
-        precent_WS_6S = WS_6S / Total
-        P = np.dstack((precent_DL_6S,precent_WS_6S,precent_OC_6S,precent_SL_6S))
-        Aerosol_type = np.where(np.amax(P,axis = 2) == precent_OC_6S,1,0)     
+            ds1 = xr.open_dataset(CAMS_AERO_PATH + d1.strftime('%Y') + d1.strftime('%m') + d1.strftime('%d') + '.nc')
+            ds2 = xr.open_dataset(CAMS_AERO_PATH + d2.strftime('%Y') + d2.strftime('%m') + d2.strftime('%d') + '.nc')
+            ds = xr.merge([ds1, ds2])
+
+        else:
+            ds = xr.open_dataset(CAMS_AERO_PATH + self.YYYY + self.MM + self.DD + '.nc')
+
+        # Interpolate data to the specified location and time
+        dtime = dt.datetime(int(self.YYYY), int(self.MM), int(self.DD), int(self.HH), int(self.MIN) + 5)
+        ds_interp = ds.interp(time=dtime, method='linear')
+        ds_interp = ds_interp.interp(longitude=self.lon, latitude=self.lat, method="nearest")
+        max_percent = np.amax([ds_interp['duaod550'].values, ds_interp['suaod550'].values, ds_interp['bcaod550'].values, ds_interp['omaod550'].values, ds_interp['ssaod550'].values], axis=0)
+        Aerosol_type = np.where(ds_interp['ssaod550'].values == max_percent, 1, 0)
+
         return Aerosol_type
+
     
 def H8_Process(ACCOUNT, PW, Band, Band_number, Date,Savepath):
     return H8_data(ACCOUNT, PW, Band, Band_number, Date,Savepath).read_H8data()
@@ -355,10 +407,33 @@ def read_Landmask(res):
     return LM   
 
 
-# Landmask = read_Landmask(res)
+def read_cams_data(CAMS_data_obj):
+    """Reads aerosol optical depth, water vapor, and ozone data from a CAMS data object using multithreading.
+
+    Args:
+        CAMS_data_obj (object): Object containing CAMS data.
+
+    Returns:
+        tuple: A tuple containing the aerosol type, ozone, water vapor, and AOT550 values.
+    """
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future_aero = executor.submit(CAMS_data_obj.read_CAMS_AERO)
+        future_cams = executor.submit(CAMS_data_obj.read_CAMS)
+    Aerosol_type = future_aero.result()
+    OZ, WV, AOT550 = future_cams.result()
+    return Aerosol_type, OZ, WV, AOT550
+
 
 @nb.jit()
 def get_water_idx(Landmask):
+    """Creates a list of water index values based on a landmask input.
+
+    Args:
+        Landmask (array): 2D array of boolean values indicating land or water.
+
+    Returns:
+        list: List of water index values.
+    """
     Water_idx = []
     for i in range(12000):
         line_idx =[]
@@ -369,7 +444,16 @@ def get_water_idx(Landmask):
         Water_idx.append(line_idx)
     return Water_idx
 
+
 def get_water_idx_2(Landmask):
+    """Creates a list of water index values based on a landmask input.
+
+    Args:
+        Landmask (array): 2D array of boolean values indicating land or water.
+
+    Returns:
+        list: List of water index values.
+    """
     Water_idx = []
     for i in range(6000):
         line_idx =[]
@@ -380,8 +464,28 @@ def get_water_idx_2(Landmask):
         Water_idx.append(line_idx)
     return Water_idx
 
-def calculate_6s_band1(fn1_1, fn2_1, fn3_1,Landmask,Aerosol_type,OZ,AOT550,RAA,AHI_SZA,AHI_VZA,AHI_AL,AHI_data,i):
+
+def calculate_6s_band1(fn1_1, fn2_1, fn3_1, Landmask, Aerosol_type, OZ, AOT550, RAA, AHI_SZA, AHI_VZA, AHI_AL, AHI_data, i):
+    """Calculate surface reflectance for Band 1 using 6S model.
     
+    Args:
+        fn1_1 (function): Function for the first component of the aerosol model.
+        fn2_1 (function): Function for the second component of the aerosol model.
+        fn3_1 (function): Function for the third component of the aerosol model.
+        Landmask (2D numpy array): Landmask for the region of interest.
+        Aerosol_type (2D numpy array): Aerosol type data for the region of interest.
+        OZ (2D numpy array): Ozone data for the region of interest.
+        AOT550 (2D numpy array): Aerosol optical thickness data for the region of interest.
+        RAA (2D numpy array): Relative azimuth angle data for the region of interest.
+        AHI_SZA (2D numpy array): Satellite zenith angle data for the region of interest.
+        AHI_VZA (2D numpy array): View zenith angle data for the region of interest.
+        AHI_AL (2D numpy array): Absolute difference of satellite and view azimuth angle data for the region of interest.
+        AHI_data (2D numpy array): Satellite data for the region of interest.
+        i (int): Index for the current time step.
+        
+    Returns:
+        SR (1D numpy array): Surface reflectance for Band 1.
+    """
     Aero_input = Aerosol_type[i][Landmask[i]]
     OZ_input = OZ[i][Landmask[i]]
     AOT550_input = AOT550[i][Landmask[i]]
@@ -391,13 +495,18 @@ def calculate_6s_band1(fn1_1, fn2_1, fn3_1,Landmask,Aerosol_type,OZ,AOT550,RAA,A
     AL_input = AHI_AL[i][Landmask[i]]
     AHI_data_input = AHI_data[i][Landmask[i]]
 
-    xi = np.array([Aero_input,OZ_input,AOT550_input,AL_input,SZA_input,VZA_input,RAA_input])
-    xi = xi.T
+    # Prepare input data for the 6S model
+    xi = np.array([Aero_input, OZ_input, AOT550_input, AL_input, SZA_input, VZA_input, RAA_input]).T
+    
+    # Calculate the first, second, and third components of the aerosol model
     xa = fn1_1(xi)
     xb = fn2_1(xi)
     xc = fn3_1(xi)
-    y = xa*AHI_data_input-xb
-    SR = y/(1+xc*y)
+    
+    # Calculate surface reflectance
+    y = xa * AHI_data_input - xb
+    SR = y / (1 + xc * y)
+    
     return SR
 
 def calculate_6s_band2(fn1_2, fn2_2, fn3_2,Landmask,Aerosol_type,OZ,AOT550,RAA,AHI_SZA,AHI_VZA,AHI_AL,AHI_data,i):
