@@ -186,7 +186,7 @@ class H8_data:
 
 class LUT_interpolator:
     """
-    This class is used to read LUT files and interpolate LUT data.
+    This class is used to read LUT files and interpolate LUT.
     """
 
     def __init__(self, band):
@@ -469,9 +469,9 @@ def calculate_6s_band1(fn1_1, fn2_1, fn3_1, Landmask, Aerosol_type, OZ, AOT550, 
     """Calculate surface reflectance for Band 1 using 6S model.
     
     Args:
-        fn1_1 (function): Function for the first component of the aerosol model.
-        fn2_1 (function): Function for the second component of the aerosol model.
-        fn3_1 (function): Function for the third component of the aerosol model.
+        fn1_1 (LUT): LUT for the Xa.
+        fn2_1 (LUT): LUT for the Xb.
+        fn3_1 (LUT): LUT for the Xc.
         Landmask (2D numpy array): Landmask for the region of interest.
         Aerosol_type (2D numpy array): Aerosol type data for the region of interest.
         OZ (2D numpy array): Ozone data for the region of interest.
@@ -479,8 +479,8 @@ def calculate_6s_band1(fn1_1, fn2_1, fn3_1, Landmask, Aerosol_type, OZ, AOT550, 
         RAA (2D numpy array): Relative azimuth angle data for the region of interest.
         AHI_SZA (2D numpy array): Satellite zenith angle data for the region of interest.
         AHI_VZA (2D numpy array): View zenith angle data for the region of interest.
-        AHI_AL (2D numpy array): Absolute difference of satellite and view azimuth angle data for the region of interest.
-        AHI_data (2D numpy array): Satellite data for the region of interest.
+        AHI_AL (2D numpy array): Altitude for the region of interest.
+        AHI_data (2D numpy array): AHI TOA reflectance data for the region of interest.
         i (int): Index for the current time step.
         
     Returns:
