@@ -186,7 +186,7 @@ class H8_data:
 
 class LUT_interpolator:
     """
-    This class is used to read LUT files and interpolate LUT.
+    This class is used to read LUT files and interpolate LUT data.
     """
 
     def __init__(self, band):
@@ -435,29 +435,9 @@ def get_water_idx(Landmask):
         list: List of water index values.
     """
     Water_idx = []
-    for i in range(12000):
+    for i in range(Landmask.shape[0]):
         line_idx =[]
-        for j in range(12000):
-            if Landmask[i,j] == True:
-                line_idx.append(j)
-
-        Water_idx.append(line_idx)
-    return Water_idx
-
-
-def get_water_idx_2(Landmask):
-    """Creates a list of water index values based on a landmask input.
-
-    Args:
-        Landmask (array): 2D array of boolean values indicating land or water.
-
-    Returns:
-        list: List of water index values.
-    """
-    Water_idx = []
-    for i in range(6000):
-        line_idx =[]
-        for j in range(6000):
+        for j in range(Landmask.shape[1]):
             if Landmask[i,j] == True:
                 line_idx.append(j)
 
@@ -469,9 +449,9 @@ def calculate_6s_band1(fn1_1, fn2_1, fn3_1, Landmask, Aerosol_type, OZ, AOT550, 
     """Calculate surface reflectance for Band 1 using 6S model.
     
     Args:
-        fn1_1 (LUT): LUT for the Xa.
-        fn2_1 (LUT): LUT for the Xb.
-        fn3_1 (LUT): LUT for the Xc.
+        fn1_1 (function): Function for the first component of the aerosol model.
+        fn2_1 (function): Function for the second component of the aerosol model.
+        fn3_1 (function): Function for the third component of the aerosol model.
         Landmask (2D numpy array): Landmask for the region of interest.
         Aerosol_type (2D numpy array): Aerosol type data for the region of interest.
         OZ (2D numpy array): Ozone data for the region of interest.
@@ -479,8 +459,8 @@ def calculate_6s_band1(fn1_1, fn2_1, fn3_1, Landmask, Aerosol_type, OZ, AOT550, 
         RAA (2D numpy array): Relative azimuth angle data for the region of interest.
         AHI_SZA (2D numpy array): Satellite zenith angle data for the region of interest.
         AHI_VZA (2D numpy array): View zenith angle data for the region of interest.
-        AHI_AL (2D numpy array): Altitude for the region of interest.
-        AHI_data (2D numpy array): AHI TOA reflectance data for the region of interest.
+        AHI_AL (2D numpy array): Absolute difference of satellite and view azimuth angle data for the region of interest.
+        AHI_data (2D numpy array): Satellite data for the region of interest.
         i (int): Index for the current time step.
         
     Returns:
@@ -610,3 +590,25 @@ def calculate_6s_band6(fn1_4, fn2_4, fn3_4,Landmask,Aerosol_type,WV,AOT550,RAA,A
     y = xa*AHI_data_input-xb
     SR = y/(1+xc*y)
     return SR  
+
+def main_read(res,lat_up, lat_bottom,lon_left, lon_right):
+    
+    # Calculate rows and columns
+    row_AHI = round((lat_up - lat_bottom) / res)
+    col_AHI = round((lon_right - lon_left) / res)
+
+    # Longitude and latitude grid
+    AHI_lat = np.linspace(lat_up - res / 2, lat_bottom + res / 2, row_AHI)
+    AHI_lon = np.linspace(lon_left + res / 2, lon_right - res / 2, col_AHI)
+    
+    
+    row = round((60 - lat_up) / res)
+    col = round((lon_left - 85) / res)
+
+    # Read AHI VZA, VAA, AHI, and Landmask by resolution
+    AHI_VZA, AHI_VAA = read_AHI_VA(res)
+    Landmask = read_Landmask(res)
+    AHI_AL = read_AHI_AL(res)
+    Water_idx = get_water_idx(Landmask[row:row+row_AHI,col:col+col_AHI])
+    
+    return row,col,row_AHI,col_AHI,AHI_lat,AHI_lon,AHI_VZA[row:row+row_AHI,col:col+col_AHI], AHI_VAA[row:row+row_AHI,col:col+col_AHI],AHI_AL[row:row+row_AHI,col:col+col_AHI],Water_idx,Landmask[row:row+row_AHI,col:col+col_AHI]
